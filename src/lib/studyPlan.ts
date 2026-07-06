@@ -1,6 +1,6 @@
 import { VOCABULARY } from '../data/vocabulary';
 import type { AppState, CardProgress } from '../types';
-import { MAX_SESSION_MINUTES, REVIEW_ONLY_DAYS_BEFORE_EXAM } from '../types';
+import { MAX_SESSION_MINUTES, REVIEW_ONLY_DAYS_BEFORE_EXAM, SESSION_NEW_WORDS_TARGET } from '../types';
 import { getDueCards, sortByPriority, countKnown } from './srs';
 
 const AVG_SECONDS_PER_CARD = 45;
@@ -36,7 +36,7 @@ function countLearned(cards: Record<string, CardProgress>): number {
 
 function countMastered(cards: Record<string, CardProgress>): number {
   return Object.values(cards).filter(
-    (c) => (c.state === 'review' || c.state === 'known') && c.repetitions >= 3 && c.interval >= 7
+    (c) => c.state === 'review' && c.repetitions >= 3 && c.interval >= 7
   ).length;
 }
 
@@ -76,7 +76,7 @@ export function computeStudyPlan(state: AppState, now = new Date()): StudyPlan {
     urgencyLevel = 'moderate';
     message = `יעד יומי: ${dailyNewTarget} מילים חדשות + חזרות`;
   } else if (daysUntilExam === null) {
-    dailyNewTarget = Math.min(10, remainingNew + unassessedWords);
+    dailyNewTarget = SESSION_NEW_WORDS_TARGET;
     urgencyLevel = 'relaxed';
     message = 'הגדירו תאריך בחינה לתוכנית מותאמת אישית';
   } else if (daysUntilExam === 0) {
@@ -166,7 +166,7 @@ export function buildSessionQueue(state: AppState, now = Date.now()): SessionQue
     ? []
     : due
         .filter((c) => c.state === 'new')
-        .slice(0, Math.max(0, plan.dailyNewTarget - state.todayNewCount));
+        .slice(0, Math.max(0, SESSION_NEW_WORDS_TARGET - state.todayNewCount));
 
   const combined = [...reviewCards, ...newCards].slice(0, plan.sessionCardLimit);
 

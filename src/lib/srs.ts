@@ -5,8 +5,8 @@ import {
   LEARNING_STEPS_MINUTES,
   GRADUATING_INTERVAL_DAYS,
   EASY_INTERVAL_DAYS,
-  KNOWN_INTERVAL_DAYS,
 } from '../types';
+import { isSkipped } from './skipped';
 
 const MS_PER_MINUTE = 60_000;
 const MS_PER_DAY = 86_400_000;
@@ -39,22 +39,6 @@ export function createNewCard(vocabId: string): CardProgress {
   };
 }
 
-export function markAsKnown(card: CardProgress, now = Date.now()): CardProgress {
-  return {
-    ...card,
-    state: 'known',
-    introduced: true,
-    selfDeclaredKnown: true,
-    repetitions: 3,
-    interval: KNOWN_INTERVAL_DAYS,
-    easeFactor: DEFAULT_EASE + 0.3,
-    nextReview: addDays(now, KNOWN_INTERVAL_DAYS),
-    lastReview: now,
-    timesStudied: card.timesStudied + 1,
-    timesCorrect: card.timesCorrect + 1,
-  };
-}
-
 export function markIntroduced(card: CardProgress): CardProgress {
   return { ...card, introduced: true };
 }
@@ -76,7 +60,6 @@ export function applyRating(card: CardProgress, rating: Rating, now = Date.now()
     case 'relearning':
       return applyLearningRating(updated, rating, now);
     case 'review':
-    case 'known':
       return applyReviewRating(updated, rating, now);
     default:
       return updated;
@@ -176,9 +159,9 @@ function applyReviewRating(card: CardProgress, rating: Rating, now: number): Car
 }
 
 export function isDue(card: CardProgress, now = Date.now()): boolean {
+  if (isSkipped(card)) return false;
   if (card.state === 'new' && !card.introduced) return true;
   if (card.state === 'new') return false;
-  if (card.state === 'known' && card.nextReview > now) return false;
   return card.nextReview <= now;
 }
 
@@ -191,7 +174,7 @@ export function sortByPriority(cards: CardProgress[], now = Date.now()): CardPro
     const priority = (c: CardProgress) => {
       if (c.state === 'relearning') return 0;
       if (c.state === 'learning') return 1;
-      if ((c.state === 'review' || c.state === 'known') && c.nextReview <= now) return 2;
+      if (c.state === 'review' && c.nextReview <= now) return 2;
       if (c.state === 'new' && !c.introduced) return 3;
       if (c.state === 'new') return 4;
       return 5;
@@ -204,7 +187,7 @@ export function sortByPriority(cards: CardProgress[], now = Date.now()): CardPro
 }
 
 export function masteryPercent(card: CardProgress): number {
-  if (card.state === 'known') return 95;
+  if (isSkipped(card)) return 100;
   if (card.state === 'new') return 0;
   if (card.state === 'learning' || card.state === 'relearning') {
     return 20 + card.learningStep * 25;
@@ -214,6 +197,5 @@ export function masteryPercent(card: CardProgress): number {
   return Math.min(100, Math.round(40 + accuracy * 30 + intervalBonus));
 }
 
-export function countKnown(cards: Record<string, CardProgress>): number {
-  return Object.values(cards).filter((c) => c.state === 'known').length;
-}
+// re-export for backwards compat
+export { countSkipped as countKnown } from './skipped';

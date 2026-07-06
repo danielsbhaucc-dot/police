@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import type { AppState } from '../types';
 import { getVocabById } from '../data/vocabulary';
 import { buildAssessmentQueue, computeStudyPlan } from '../lib/studyPlan';
-import { markCardKnown, markCardIntroduced, recordSession, updateSettings } from '../lib/storage';
+import { markCardSkipped, markCardIntroduced, recordSession, updateSettings } from '../lib/storage';
 import KnowCheckPhase from '../components/KnowCheckPhase';
 import QuizPhase from '../components/QuizPhase';
 import StudyPlanCard from '../components/StudyPlanCard';
@@ -69,7 +69,7 @@ export default function AssessmentPage({ state, updateState }: Props) {
   const handleVerify = (correct: boolean) => {
     if (!currentId) return;
     if (correct) {
-      updateState((prev) => markCardKnown(prev, currentId));
+      updateState((prev) => markCardSkipped(prev, currentId));
       setStats((s) => ({ ...s, known: s.known + 1, tested: s.tested + 1 }));
     } else {
       updateState((prev) => markCardIntroduced(prev, currentId));

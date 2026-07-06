@@ -1,12 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { AppState, CardProgress, Rating, StudySession } from '../types';
+import { SESSION_NEW_WORDS_TARGET } from '../types';
 import { getVocabById } from '../data/vocabulary';
-import { computeStudyPlan, buildSessionQueue, buildEveningQueue } from '../lib/studyPlan';
-import { applyRating, sortByPriority, getDueCards, masteryPercent } from '../lib/srs';
-import { updateCard, recordSession, savePersonalData, markCardKnown, markCardIntroduced } from '../lib/storage';
-import { MAX_SESSION_MINUTES } from '../types';
+import { computeStudyPlan, buildEveningQueue } from '../lib/studyPlan';
+import { buildSessionSetup, pullNextNewWord } from '../lib/sessionQueue';
+import { applyRating, masteryPercent } from '../lib/srs';
+import { updateCard, recordSession, savePersonalData, markCardSkipped, markCardIntroduced } from '../lib/storage';
 import StudyPlanCard from '../components/StudyPlanCard';
+import SessionTimer from '../components/SessionTimer';
 import KnowCheckPhase from '../components/KnowCheckPhase';
 import WordLearningPhase from '../components/WordLearningPhase';
 import QuizPhase from '../components/QuizPhase';
@@ -19,79 +21,116 @@ interface Props {
 }
 
 type Phase = 'intro' | 'check' | 'learn' | 'verify-quiz' | 'quiz' | 'rate' | 'complete';
+type SessionMode = 'reviews' | 'new-words';
 
 export default function StudyPage({ state, updateState }: Props) {
   const [searchParams] = useSearchParams();
   const isEvening = searchParams.get('mode') === 'evening';
 
   const [phase, setPhase] = useState<Phase>('intro');
-  const [queue, setQueue] = useState<CardProgress[]>([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [sessionActive, setSessionActive] = useState(false);
+  const [sessionMode, setSessionMode] = useState<SessionMode>('new-words');
+  const [reviewQueue, setReviewQueue] = useState<CardProgress[]>([]);
+  const [reviewIndex, setReviewIndex] = useState(0);
+  const [newWordPool, setNewWordPool] = useState<CardProgress[]>([]);
+  const [usedIds, setUsedIds] = useState<Set<string>>(new Set());
+  const [currentCard, setCurrentCard] = useState<CardProgress | null>(null);
+  const [newWordsCompleted, setNewWordsCompleted] = useState(0);
+  const [skippedCount, setSkippedCount] = useState(0);
   const [sessionStats, setSessionStats] = useState({ correct: 0, studied: 0, new: 0, review: 0 });
   const [claimedKnow, setClaimedKnow] = useState(false);
-  const [elapsedMinutes, setElapsedMinutes] = useState(0);
   const sessionStart = useRef(Date.now());
 
   const plan = computeStudyPlan(state);
-  const currentCard = queue[currentIndex];
   const currentVocab = currentCard ? getVocabById(currentCard.vocabId) : undefined;
   const isNewCard = currentCard?.state === 'new';
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setElapsedMinutes(Math.floor((Date.now() - sessionStart.current) / 60000));
-    }, 10000);
-    return () => clearInterval(interval);
+  const beginNewWord = useCallback((pool: CardProgress[], used: Set<string>) => {
+    const next = pullNextNewWord(pool, used);
+    if (!next) {
+      setPhase('complete');
+      setSessionActive(false);
+      return false;
+    }
+    setUsedIds(new Set([...used, next.vocabId]));
+    setCurrentCard(next);
+    setPhase(next.introduced ? 'learn' : 'check');
+    setClaimedKnow(false);
+    return true;
   }, []);
 
-  const getInitialPhase = (card: CardProgress): Phase => {
-    if (card.state === 'new' && !card.introduced) return 'check';
-    if (card.state === 'new') return 'learn';
-    return 'quiz';
-  };
-
   const startSession = useCallback(() => {
-    let cards: CardProgress[];
+    sessionStart.current = Date.now();
+    setSessionStats({ correct: 0, studied: 0, new: 0, review: 0 });
+    setNewWordsCompleted(0);
+    setSkippedCount(0);
+    setUsedIds(new Set());
+    setSessionActive(true);
+
     if (isEvening) {
-      cards = buildEveningQueue(state);
-    } else {
-      const sq = buildSessionQueue(state);
-      cards = [...sq.reviewCards, ...sq.newCards];
-      if (cards.length === 0) {
-        const due = sortByPriority(getDueCards(Object.values(state.cards)));
-        cards = due.slice(0, 15);
-      }
-    }
-    if (cards.length === 0) {
-      setPhase('complete');
+      const cards = buildEveningQueue(state);
+      if (cards.length === 0) { setPhase('complete'); setSessionActive(false); return; }
+      setSessionMode('reviews');
+      setReviewQueue(cards);
+      setReviewIndex(0);
+      setCurrentCard(cards[0]);
+      setPhase('quiz');
       return;
     }
-    sessionStart.current = Date.now();
-    setQueue(cards);
-    setCurrentIndex(0);
-    setSessionStats({ correct: 0, studied: 0, new: 0, review: 0 });
-    setPhase(getInitialPhase(cards[0]));
-  }, [state, isEvening]);
 
-  const advanceCard = useCallback(() => {
-    if (currentIndex + 1 >= queue.length) {
-      const session: StudySession = {
-        startedAt: sessionStart.current,
-        cardsStudied: sessionStats.studied + 1,
-        newCardsStudied: sessionStats.new,
-        reviewCardsStudied: sessionStats.review,
-        correctCount: sessionStats.correct,
-        type: isEvening ? 'evening' : 'study',
-      };
-      updateState((prev) => recordSession(prev, session));
-      setPhase('complete');
+    const setup = buildSessionSetup(state);
+    setNewWordPool(setup.newWordPool);
+
+    if (setup.reviewQueue.length > 0) {
+      setSessionMode('reviews');
+      setReviewQueue(setup.reviewQueue);
+      setReviewIndex(0);
+      setCurrentCard(setup.reviewQueue[0]);
+      setPhase('quiz');
     } else {
-      const next = queue[currentIndex + 1];
-      setCurrentIndex((i) => i + 1);
-      setClaimedKnow(false);
-      setPhase(getInitialPhase(next));
+      setSessionMode('new-words');
+      beginNewWord(setup.newWordPool, new Set());
     }
-  }, [currentIndex, queue, sessionStats, updateState, isEvening]);
+  }, [state, isEvening, beginNewWord]);
+
+  const finishSession = useCallback(() => {
+    const session: StudySession = {
+      startedAt: sessionStart.current,
+      cardsStudied: sessionStats.studied,
+      newCardsStudied: newWordsCompleted,
+      reviewCardsStudied: sessionStats.review,
+      correctCount: sessionStats.correct,
+      type: isEvening ? 'evening' : 'study',
+    };
+    updateState((prev) => recordSession(prev, session));
+    setPhase('complete');
+    setSessionActive(false);
+  }, [sessionStats, newWordsCompleted, updateState, isEvening]);
+
+  const tryCompleteOrNextNew = useCallback(() => {
+    if (newWordsCompleted >= SESSION_NEW_WORDS_TARGET) {
+      finishSession();
+      return;
+    }
+    const ok = beginNewWord(newWordPool, usedIds);
+    if (!ok && newWordsCompleted < SESSION_NEW_WORDS_TARGET) {
+      finishSession();
+    }
+  }, [newWordsCompleted, newWordPool, usedIds, beginNewWord, finishSession]);
+
+  const advanceReview = useCallback(() => {
+    const nextIdx = reviewIndex + 1;
+    if (nextIdx < reviewQueue.length) {
+      setReviewIndex(nextIdx);
+      setCurrentCard(reviewQueue[nextIdx]);
+      setPhase('quiz');
+    } else if (!isEvening) {
+      setSessionMode('new-words');
+      beginNewWord(newWordPool, usedIds);
+    } else {
+      finishSession();
+    }
+  }, [reviewIndex, reviewQueue, isEvening, newWordPool, usedIds, beginNewWord, finishSession]);
 
   const handleKnow = () => {
     setClaimedKnow(true);
@@ -101,6 +140,7 @@ export default function StudyPage({ state, updateState }: Props) {
   const handleDontKnow = () => {
     if (!currentCard) return;
     updateState((prev) => markCardIntroduced(prev, currentCard.vocabId));
+    setCurrentCard({ ...currentCard, introduced: true });
     setPhase('learn');
   };
 
@@ -108,16 +148,12 @@ export default function StudyPage({ state, updateState }: Props) {
     if (!currentCard) return;
 
     if (correct && claimedKnow) {
-      updateState((prev) => markCardKnown(prev, currentCard.vocabId));
-      setSessionStats((s) => ({
-        ...s,
-        studied: s.studied + 1,
-        correct: s.correct + 1,
-        new: s.new + 1,
-      }));
-      advanceCard();
+      updateState((prev) => markCardSkipped(prev, currentCard.vocabId));
+      setSkippedCount((s) => s + 1);
+      tryCompleteOrNextNew();
     } else {
       updateState((prev) => markCardIntroduced(prev, currentCard.vocabId));
+      setCurrentCard({ ...currentCard, introduced: true });
       setPhase('learn');
     }
   };
@@ -129,16 +165,31 @@ export default function StudyPage({ state, updateState }: Props) {
 
   const handleRating = (rating: Rating) => {
     if (!currentCard) return;
+
+    if (sessionMode === 'reviews' || isEvening) {
+      const updated = applyRating(currentCard, rating);
+      updateState((prev) => updateCard(prev, updated));
+      setSessionStats((s) => ({ ...s, studied: s.studied + 1, review: s.review + 1 }));
+      advanceReview();
+      return;
+    }
+
     const wasNew = currentCard.state === 'new';
     const updated = applyRating(currentCard, rating);
     updateState((prev) => updateCard(prev, updated));
+    const completed = newWordsCompleted + 1;
+    setNewWordsCompleted(completed);
     setSessionStats((s) => ({
       ...s,
       studied: s.studied + 1,
       new: wasNew ? s.new + 1 : s.new,
-      review: !wasNew ? s.review + 1 : s.review,
     }));
-    advanceCard();
+
+    if (completed >= SESSION_NEW_WORDS_TARGET) {
+      finishSession();
+    } else {
+      tryCompleteOrNextNew();
+    }
   };
 
   const handleSavePersonal = (sentence: string, experience: string) => {
@@ -147,19 +198,15 @@ export default function StudyPage({ state, updateState }: Props) {
     setPhase('quiz');
   };
 
-  const timeWarning = elapsedMinutes >= MAX_SESSION_MINUTES - 5;
-  const timeExceeded = elapsedMinutes >= MAX_SESSION_MINUTES;
+  const newProgressLabel = `${newWordsCompleted}/${SESSION_NEW_WORDS_TARGET} מילים חדשות`;
 
   return (
     <div className="study-page">
       <div className="container">
         <header className="study-header">
           <Link to="/" className="study-header__back">→ חזרה לדף הבית</Link>
-          {phase !== 'intro' && phase !== 'complete' && (
-            <div className={`session-timer ${timeWarning ? 'session-timer--warning' : ''}`}>
-              ⏱️ {elapsedMinutes}/{MAX_SESSION_MINUTES} דק׳
-              {timeExceeded && ' – הפסקה!'}
-            </div>
+          {sessionActive && (
+            <SessionTimer active={sessionActive} startedAt={sessionStart.current} />
           )}
         </header>
 
@@ -172,8 +219,9 @@ export default function StudyPage({ state, updateState }: Props) {
             <p>{isEvening ? 'חזרו על מילים שלמדתם – מידע מתגבש בשינה' : plan.message}</p>
             {!isEvening && (
               <p className="intro-panel__meta">
-                היום: {plan.dailyNewTarget} חדשות + {plan.dailyReviewTarget} חזרות
-                • מקס׳ {plan.sessionMinutesLimit} דקות
+                כל שיעור: {SESSION_NEW_WORDS_TARGET} מילים חדשות ללמידה
+                {plan.dailyReviewTarget > 0 && ` + ${plan.dailyReviewTarget} חזרות`}
+                • מקס׳ 30 דקות
               </p>
             )}
             <button className="btn btn-primary btn-lg" onClick={startSession}>
@@ -182,11 +230,20 @@ export default function StudyPage({ state, updateState }: Props) {
           </div>
         )}
 
+        {sessionMode === 'new-words' && phase !== 'intro' && phase !== 'complete' && !isEvening && (
+          <div className="session-new-progress glass">
+            <span>{newProgressLabel}</span>
+            {skippedCount > 0 && (
+              <span className="session-new-progress__skipped">{skippedCount} דולגו (כבר ידועות)</span>
+            )}
+          </div>
+        )}
+
         {phase === 'check' && currentVocab && (
           <KnowCheckPhase
             vocab={currentVocab}
-            index={currentIndex}
-            total={queue.length}
+            index={newWordsCompleted}
+            total={SESSION_NEW_WORDS_TARGET}
             onKnow={handleKnow}
             onDontKnow={handleDontKnow}
           />
@@ -194,6 +251,7 @@ export default function StudyPage({ state, updateState }: Props) {
 
         {phase === 'verify-quiz' && currentVocab && (
           <div className="study-session">
+            <p className="swipe-instruction">הוכחתם שאתם מכירים – בחינה קצרה (לא נספרת בשיעור)</p>
             <QuizPhase vocab={currentVocab} challenging onAnswer={handleVerifyQuiz} />
           </div>
         )}
@@ -202,11 +260,8 @@ export default function StudyPage({ state, updateState }: Props) {
           <div className="study-session">
             <div className="session-progress">
               <div className="session-progress__header">
-                <span>{currentIndex + 1}/{queue.length}</span>
+                <span>{newProgressLabel}</span>
                 <span>{masteryPercent(currentCard)}% שליטה</span>
-              </div>
-              <div className="progress-bar">
-                <div className="progress-fill" style={{ width: `${(currentIndex / queue.length) * 100}%` }} />
               </div>
             </div>
             <WordLearningPhase
@@ -235,24 +290,21 @@ export default function StudyPage({ state, updateState }: Props) {
               <div className="word-card__meaning">{currentVocab.meaning}</div>
             </div>
             <div className="rating-buttons">
-              <button className="rating-btn rating-btn--again" onClick={() => handleRating('again')}>
-                שוב<span>&lt;1 דק׳</span>
-              </button>
-              <button className="rating-btn rating-btn--hard" onClick={() => handleRating('hard')}>
-                קשה<span>~10 דק׳</span>
-              </button>
-              <button className="rating-btn rating-btn--good" onClick={() => handleRating('good')}>
-                טוב<span>1 יום</span>
-              </button>
-              <button className="rating-btn rating-btn--easy" onClick={() => handleRating('easy')}>
-                קל<span>4 ימים</span>
-              </button>
+              <button className="rating-btn rating-btn--again" onClick={() => handleRating('again')}>שוב<span>&lt;1 דק׳</span></button>
+              <button className="rating-btn rating-btn--hard" onClick={() => handleRating('hard')}>קשה<span>~10 דק׳</span></button>
+              <button className="rating-btn rating-btn--good" onClick={() => handleRating('good')}>טוב<span>1 יום</span></button>
+              <button className="rating-btn rating-btn--easy" onClick={() => handleRating('easy')}>קל<span>4 ימים</span></button>
             </div>
           </div>
         )}
 
         {phase === 'complete' && (
-          <SessionComplete stats={sessionStats} plan={plan} onRestart={startSession} />
+          <SessionComplete
+            stats={{ ...sessionStats, new: newWordsCompleted }}
+            plan={plan}
+            skippedCount={skippedCount}
+            onRestart={startSession}
+          />
         )}
       </div>
     </div>

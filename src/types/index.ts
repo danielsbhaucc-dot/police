@@ -1,4 +1,4 @@
-export type CardState = 'new' | 'learning' | 'review' | 'relearning' | 'known';
+export type CardState = 'new' | 'learning' | 'review' | 'relearning' | 'skipped';
 export type Rating = 'again' | 'hard' | 'good' | 'easy';
 
 export interface CardProgress {
@@ -60,5 +60,5 @@ export const MAX_SESSION_MINUTES = 30;
 export const LEARNING_STEPS_MINUTES = [1, 10];
 export const GRADUATING_INTERVAL_DAYS = 1;
 export const EASY_INTERVAL_DAYS = 4;
-export const KNOWN_INTERVAL_DAYS = 21;
 export const REVIEW_ONLY_DAYS_BEFORE_EXAM = 3;
+export const SESSION_NEW_WORDS_TARGET = 10;

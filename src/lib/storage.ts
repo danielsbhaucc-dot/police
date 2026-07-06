@@ -1,7 +1,8 @@
 import { VOCABULARY } from '../data/vocabulary';
 import type { AppState, CardProgress, StudySession, UserSettings } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
-import { createNewCard, markAsKnown, markIntroduced, countKnown } from './srs';
+import { createNewCard, markIntroduced, countKnown } from './srs';
+import { markAsSkipped } from './skipped';
 
 const STORAGE_KEY = 'police-exam-prep-v2';
 
@@ -18,12 +19,16 @@ function initCards(): Record<string, CardProgress> {
 }
 
 function migrateCard(card: CardProgress): CardProgress {
-  return {
+  const base = {
     ...createNewCard(card.vocabId),
     ...card,
     introduced: card.introduced ?? false,
     selfDeclaredKnown: card.selfDeclaredKnown ?? false,
   };
+  if ((card.state as string) === 'known') {
+    return markAsSkipped(base);
+  }
+  return base;
 }
 
 function defaultState(): AppState {
@@ -100,11 +105,20 @@ export function recordSession(state: AppState, session: StudySession): AppState 
   };
 }
 
-export function markCardKnown(state: AppState, vocabId: string): AppState {
+export function markCardSkipped(state: AppState, vocabId: string): AppState {
   const card = state.cards[vocabId];
   if (!card) return state;
-  return updateCard(state, markAsKnown(card));
+  const skipped = markAsSkipped(card);
+  return {
+    ...state,
+    cards: { ...state.cards, [vocabId]: skipped },
+    knownWordsCount: countKnown({ ...state.cards, [vocabId]: skipped }),
+    lastSessionDate: todayKey(),
+  };
 }
+
+/** @deprecated use markCardSkipped */
+export const markCardKnown = markCardSkipped;
 
 export function markCardIntroduced(state: AppState, vocabId: string): AppState {
   const card = state.cards[vocabId];
