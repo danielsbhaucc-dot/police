@@ -302,7 +302,16 @@ export function getVocabById(id: string): VocabEntry | undefined {
 }
 
 export function getRandomDistractors(correctId: string, count: number): VocabEntry[] {
-  const others = VOCABULARY.filter((v) => v.id !== correctId);
-  const shuffled = [...others].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, count);
+  const correct = VOCABULARY.find((v) => v.id === correctId);
+  if (!correct) return [];
+  const seen = new Set<string>([correct.meaning.trim()]);
+  const result: VocabEntry[] = [];
+  const pool = [...VOCABULARY].filter((v) => v.id !== correctId).sort(() => Math.random() - 0.5);
+  for (const v of pool) {
+    if (result.length >= count) break;
+    if (seen.has(v.meaning.trim())) continue;
+    seen.add(v.meaning.trim());
+    result.push(v);
+  }
+  return result;
 }
